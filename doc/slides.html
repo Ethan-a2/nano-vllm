@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nano-vLLM 架构分析</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e8e8e8;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .slide {
+            display: none;
+            min-height: 100vh;
+            padding: 60px 80px;
+            position: relative;
+            animation: fadeIn 0.5s ease;
+        }
+        .slide.active {
+            display: flex;
+            flex-direction: column;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-title {
+            font-size: 2.8em;
+            margin-bottom: 40px;
+            color: #00d4ff;
+            text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+            border-bottom: 3px solid #00d4ff;
+            padding-bottom: 15px;
+        }
+        .slide-subtitle {
+            font-size: 1.5em;
+            color: #7ec8e3;
+            margin-bottom: 30px;
+        }
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .code-block {
+            background: #1e1e3f;
+            border-radius: 10px;
+            padding: 20px;
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9em;
+            overflow-x: auto;
+            border-left: 4px solid #00d4ff;
+            line-height: 1.6;
+        }
+        .code-block .keyword { color: #ff79c6; }
+        .code-block .function { color: #50fa7b; }
+        .code-block .string { color: #f1fa8c; }
+        .code-block .comment { color: #6272a4; }
+        .code-block .number { color: #bd93f9; }
+        .highlight {
+            background: linear-gradient(90deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .feature-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.2);
+        }
+        .feature-card h3 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+        .component-diagram {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 15px;
+            padding: 30px;
+            margin: 20px 0;
+        }
+        .component-diagram .box {
+            display: inline-block;
+            padding: 15px 25px;
+            margin: 10px;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+        .box-engine { background: linear-gradient(135deg, #667eea, #764ba2); }
+        .box-scheduler { background: linear-gradient(135deg, #f093fb, #f5576c); }
+        .box-runner { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+        .box-model { background: linear-gradient(135deg, #43e97b, #38f9d7); }
+        .box-cache { background: linear-gradient(135deg, #fa709a, #fee140); }
+        .arrow {
+            color: #00d4ff;
+            font-size: 1.5em;
+            margin: 0 10px;
+        }
+        .nav {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            gap: 10px;
+            z-index: 1000;
+        }
+        .nav button {
+            background: rgba(0, 212, 255, 0.2);
+            border: 2px solid #00d4ff;
+            color: #00d4ff;
+            padding: 12px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+        .nav button:hover {
+            background: #00d4ff;
+            color: #1a1a2e;
+        }
+        .progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #00d4ff, #ff6b6b);
+            transition: width 0.3s;
+        }
+        .slide-number {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.9em;
+        }
+        ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        ul li {
+            padding: 10px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        ul li::before {
+            content: '▸';
+            position: absolute;
+            left: 0;
+            color: #00d4ff;
+        }
+        .mermaid {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        th {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+        tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .stat-box {
+            display: inline-block;
+            background: linear-gradient(135deg, #1e1e3f, #2d2d5a);
+            border-radius: 15px;
+            padding: 30px;
+            margin: 10px;
+            min-width: 200px;
+            text-align: center;
+        }
+        .stat-box .number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        .stat-box .label {
+            color: #7ec8e3;
+            margin-top: 10px;
+        }
+        .tag {
+            display: inline-block;
+            background: rgba(0, 212, 255, 0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            margin: 5px;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-bar" id="progress"></div>
+    
+    <!-- Slide 1: 标题页 -->
+    <div class="slide active">
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+            <h1 style="font-size: 3.5em; margin-bottom: 30px;">
+                <span class="highlight">Nano-vLLM</span>
+            </h1>
+            <p style="font-size: 1.8em; color: #7ec8e3; margin-bottom: 50px;">轻量级 LLM 推理引擎架构分析</p>
+            <div style="display: flex; gap: 30px; flex-wrap: wrap; justify-content: center;">
+                <span class="tag">🚀 快速推理</span>
+                <span class="tag">📖 可读代码</span>
+                <span class="tag">⚡ 优化套件</span>
+                <span class="tag">💻 ~1200 行</span>
+            </div>
+            <p style="margin-top: 60px; color: rgba(255,255,255,0.5);">按 → 或点击右下角按钮翻页</p>
+        </div>
+        <div class="slide-number">1 / 12</div>
+    </div>
+
+    <!-- Slide 2: 整体架构 -->
+    <div class="slide">
+        <h2 class="slide-title">🏗️ 整体架构</h2>
+        <div class="content">
+            <p class="slide-subtitle">Nano-vLLM 采用分层设计，核心组件协同工作</p>
+            
+            <div class="component-diagram" style="text-align: center;">
+                <span class="box box-engine">LLMEngine</span>
+                <span class="arrow">→</span>
+                <span class="box box-scheduler">Scheduler</span>
+                <span class="arrow">→</span>
+                <span class="box box-runner">ModelRunner</span>
+                <span class="arrow">→</span>
+                <span class="box box-model">Model</span>
+                <br><br>
+                <span class="box box-cache">BlockManager</span>
+                <span class="arrow">↔</span>
+                <span class="box box-cache">KV Cache</span>
+            </div>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>🔄 Continuous Batching</h3>
+                    <p>以 batch 为单位调度请求，无需等待整个 batch 完成</p>
+                </div>
+                <div class="feature-card">
+                    <h3>📑 PagedAttention</h3>
+                    <p>分页管理 KV Cache，避免内存碎片</p>
+                </div>
+                <div class="feature-card">
+                    <h3>💾 Prefix Caching</h3>
+                    <p>通过 hash 复用相同前缀的 KV Cache</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🎯 CUDA Graph</h3>
+                    <p>预编译计算图，减少 kernel launch 开销</p>
+                </div>
+            </div>
+        </div>
+        <div class="slide-number">2 / 12</div>
+    </div>
+
+    <!-- Slide 3: 核心组件 -->
+    <div class="slide">
+        <h2 class="slide-title">🧩 核心组件</h2>
+        <div class="content">
+            <table>
+                <tr>
+                    <th>组件</th>
+                    <th>位置</th>
+                    <th>职责</th>
+                </tr>
+                <tr>
+                    <td><strong>LLMEngine</strong></td>
+                    <td>engine/llm_engine.py</td>
+                    <td>主入口，orchestration 调度</td>
+                </tr>
+                <tr>
+                    <td><strong>Scheduler</strong></td>
+                    <td>engine/scheduler.py</td>
+                    <td>请求调度，batch 决策</td>
+                </tr>
+                <tr>
+                    <td><strong>ModelRunner</strong></td>
+                    <td>engine/model_runner.py</td>
+                    <td>模型执行，CUDA Graph</td>
+                </tr>
+                <tr>
+                    <td><strong>BlockManager</strong></td>
+                    <td>engine/block_manager.py</td>
+                    <td>KV Cache 分页管理</td>
+                </tr>
+                <tr>
+                    <td><strong>Sequence</strong></td>
+                    <td>engine/sequence.py</td>
+                    <td>单个请求的状态</td>
+                </tr>
+                <tr>
+                    <td><strong>Qwen3ForCausalLM</strong></td>
+                    <td>models/qwen3.py</td>
+                    <td>模型前向传播</td>
+                </tr>
+                <tr>
+                    <td><strong>Attention</strong></td>
+                    <td>layers/attention.py</td>
+                    <td>注意力 + PagedAttention</td>
+                </tr>
+                <tr>
+                    <td><strong>Sampler</strong></td>
+                    <td>layers/sampler.py</td>
+                    <td>采样生成 token</td>
+                </tr>
+            </table>
+        </div>
+        <div class="slide-number">3 / 12</div>
+    </div>
+
+    <!-- Slide 4: LLMEngine -->
+    <div class="slide">
+        <h2 class="slide-title">⚙️ LLMEngine 核心逻辑</h2>
+        <div class="content">
+            <p class="slide-subtitle">主引擎负责整体流程编排</p>
+            
+            <div class="code-block">
+<span class="keyword">class</span> <span class="function">LLMEngine</span>:
+    
+    <span class="keyword">def</span> <span class="function">__init__</span>(self, model, **kwargs):
+        <span class="comment"># 1. 配置解析</span>
+        config = Config(model, **config_kwargs)
+        
+        <span class="comment"># 2. 启动多进程 (Tensor Parallelism)</span>
+        <span class="keyword">for</span> i <span class="keyword">in</span> <span class="keyword">range</span>(1, config.tensor_parallel_size):
+            process = ctx.Process(target=ModelRunner, 
+                                  args=(config, i, event))
+            process.start()
+        
+        <span class="comment"># 3. 初始化 ModelRunner</span>
+        self.model_runner = ModelRunner(config, 0, events)
+        self.scheduler = Scheduler(config)
+
+    <span class="keyword">def</span> <span class="function">generate</span>(self, prompts, sampling_params):
+        <span class="keyword">for</span> prompt, sp <span class="keyword">in</span> zip(prompts, sampling_params):
+            self.add_request(prompt, sp)
+        
+        <span class="comment"># 主循环: 持续调度直到全部完成</span>
+        <span class="keyword">while</span> <span class="keyword">not</span> self.is_finished():
+            output, num_tokens = self.step()
+            <span class="comment"># 处理输出...</span>
+        
+        <span class="keyword">return</span> outputs
+
+    <span class="keyword">def</span> <span class="function">step</span>(self):
+        <span class="comment"># 调度 → 模型运行 → 后处理</span>
+        seqs, is_prefill = self.scheduler.schedule()
+        token_ids = self.model_runner.call(<span class="string">"run"</span>, seqs, is_prefill)
+        self.scheduler.postprocess(seqs, token_ids)
+        <span class="keyword">return</span> outputs, num_tokens
+</div>
+        </div>
+        <div class="slide-number">4 / 12</div>
+    </div>
+
+    <!-- Slide 5: Scheduler -->
+    <div class="slide">
+        <h2 class="slide-title">📋 Scheduler 调度策略</h2>
+        <div class="content">
+            <p class="slide-subtitle">Prefill-Decode 分离的连续批处理</p>
+            
+            <div class="code-block">
+<span class="keyword">def</span> <span class="function">schedule</span>(self) -> tuple[list[Sequence], bool]:
+    <span class="comment"># ====== PREPHASE (is_prefill=True) ======</span>
+    scheduled_seqs = []
+    <span class="keyword">while</span> self.waiting <span class="keyword">and</span> num_seqs < self.max_num_seqs:
+        seq = self.waiting[0]
+        
+        <span class="comment"># 检查资源是否足够</span>
+        <span class="keyword">if</span> num_batched_tokens + len(seq) > max_batched_tokens:
+            <span class="keyword">break</span>
+        <span class="keyword">if not</span> self.block_manager.can_allocate(seq):
+            <span class="keyword">break</span>
+        
+        <span class="comment"># 分配 block，状态变为 RUNNING</span>
+        self.block_manager.allocate(seq)
+        seq.status = SequenceStatus.RUNNING
+        self.waiting.popleft()
+        self.running.append(seq)
+        scheduled_seqs.append(seq)
+    
+    <span class="keyword">if</span> scheduled_seqs:
+        <span class="keyword">return</span> scheduled_seqs, <span class="keyword">True</span>
+
+    <span class="comment"># ====== DECODE PHASE (is_prefill=False) ======</span>
+    <span class="keyword">while</span> self.running <span class="keyword">and</span> num_seqs < self.max_num_seqs:
+        seq = self.running.popleft()
+        
+        <span class="comment"># 检查是否可以追加 token</span>
+        <span class="keyword">while not</span> self.block_manager.can_append(seq):
+            <span class="keyword">if</span> self.running:
+                self.preempt(self.running.pop())  <span class="comment"># 抢占</span>
+            <span class="keyword">else</span>:
+                self.preempt(seq)
+                <span class="keyword">break</span>
+        
+        self.block_manager.may_append(seq)
+        scheduled_seqs.append(seq)
+    
+    <span class="keyword">return</span> scheduled_seqs, <span class="keyword">False</span>
+</div>
+        </div>
+        <div class="slide-number">5 / 12</div>
+    </div>
+
+    <!-- Slide 6: BlockManager -->
+    <div class="slide">
+        <h2 class="slide-title">💾 BlockManager 内存管理</h2>
+        <div class="content">
+            <p class="slide-subtitle">PagedAttention + Prefix Caching 实现</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>📑 分页管理</h3>
+                    <p>KV Cache 按固定大小 (256 tokens/block) 分页，避免 PyTorch 动态切片的内存碎片</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔍 Prefix 缓存</h3>
+                    <p>使用 xxhash 计算 block hash，相同前缀的序列可复用已计算的 KV</p>
+                </div>
+            </div>
+            
+            <div class="code-block" style="margin-top: 20px;">
+<span class="comment"># Block 分配与 Prefix Caching</span>
+<span class="keyword">def</span> <span class="function">allocate</span>(self, seq):
+    <span class="keyword">for</span> i <span class="keyword">in</span> <span class="keyword">range</span>(seq.num_blocks):
+        token_ids = seq.block(i)
+        
+        <span class="comment"># 计算链式 hash</span>
+        h = self.compute_hash(token_ids, prefix=h)
+        
+        <span class="comment"># 查找缓存</span>
+        block_id = self.hash_to_block_id.get(h, -1)
+        <span class="keyword">if</span> block_id == -1:
+            <span class="comment"># Cache miss: 分配新 block</span>
+            block_id = self.free_block_ids[0]
+            self._allocate_block(block_id)
+        <span class="keyword">else</span>:
+            <span class="comment"># Cache hit: 复用</span>
+            seq.num_cached_tokens += self.block_size
+            self.blocks[block_id].ref_count += 1
+        
+        seq.block_table.append(block_id)
+
+<span class="keyword">def</span> <span class="function">compute_hash</span>(cls, token_ids, prefix=-1):
+    h = xxhash.xxh64()
+    <span class="keyword">if</span> prefix != -1:
+        h.update(prefix.to_bytes(8, <span class="string">"little"</span>))
+    h.update(np.array(token_ids).tobytes())
+    <span class="keyword">return</span> h.intdigest()
+</div>
+        </div>
+        <div class="slide-number">6 / 12</div>
+    </div>
+
+    <!-- Slide 7: ModelRunner -->
+    <div class="slide">
+        <h2 class="slide-title">🚀 ModelRunner 执行引擎</h2>
+        <div class="content">
+            <p class="slide-subtitle">模型运行 + CUDA Graph + Triton Kernel</p>
+            
+            <div class="code-block">
+<span class="comment"># 1. CUDA Graph 捕获</span>
+<span class="keyword">def</span> <span class="function">capture_cudagraph</span>(self):
+    max_bs = min(self.config.max_num_seqs, 512)
+    self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs+1, 16))
+    self.graphs = {}
+    
+    <span class="keyword">for</span> bs <span class="keyword">in</span> reversed(self.graph_bs):
+        graph = torch.cuda.CUDAGraph()
+        set_context(<span class="keyword">False</span>, slot_mapping=slot_mapping[:bs], ...)
+        
+        <span class="comment"># 预编译计算图</span>
+        <span class="keyword">with</span> torch.cuda.graph(graph, self.graph_pool):
+            outputs[:bs] = self.model(input_ids[:bs], positions[:bs])
+        
+        self.graphs[bs] = graph
+
+<span class="comment"># 2. 模型执行 (自动选择)</span>
+<span class="keyword">def</span> <span class="function">run_model</span>(self, input_ids, positions, is_prefill):
+    <span class="keyword">if</span> is_prefill <span class="keyword">or</span> self.enforce_eager <span class="keyword">or</span> bs > 512:
+        <span class="keyword">return</span> self.model.compute_logits(self.model(input_ids, positions))
+    <span class="keyword">else</span>:
+        <span class="comment"># CUDA Graph 加速</span>
+        graph = self.graphs[next(x <span class="keyword">for</span> x <span class="keyword">in</span> self.graph_bs <span class="keyword">if</span> x >= bs)]
+        graph_vars[<span class="string">"input_ids"</span>][:bs] = input_ids
+        graph.replay()
+        <span class="keyword">return</span> self.model.compute_logits(graph_vars[<span class="string">"outputs"</span>][:bs])
+</div>
+            
+            <div class="stat-box" style="margin-top: 20px;">
+                <div class="number">1434</div>
+                <div class="label">tokens/s (Nano-vLLM)</div>
+            </div>
+            <div class="stat-box">
+                <div class="number">1362</div>
+                <div class="label">tokens/s (vLLM)</div>
+            </div>
+        </div>
+        <div class="slide-number">7 / 12</div>
+    </div>
+
+    <!-- Slide 8: Attention -->
+    <div class="slide">
+        <h2 class="slide-title">🔮 Attention 注意力机制</h2>
+        <div class="content">
+            <p class="slide-subtitle">FlashAttention + Triton Kernel 实现 PagedAttention</p>
+            
+            <div class="code-block">
+<span class="keyword">class</span> <span class="function">Attention</span>(nn.Module):
+    
+    <span class="keyword">def</span> <span class="function">__init__</span>(self, num_heads, head_dim, scale, num_kv_heads):
+        self.k_cache = self.v_cache = torch.tensor([])
+
+    <span class="keyword">def</span> <span class="function">forward</span>(self, q, k, v):
+        context = get_context()
+        
+        <span class="comment"># 1. 写入 KV Cache (Triton Kernel)</span>
+        <span class="keyword">if</span> self.k_cache.numel() <span class="keyword">and</span> self.v_cache.numel():
+            store_kvcache(k, v, self.k_cache, self.v_cache, 
+                         context.slot_mapping)
+        
+        <span class="comment"># 2. Prefill 阶段</span>
+        <span class="keyword">if</span> context.is_prefill:
+            <span class="keyword">if</span> context.block_tables <span class="keyword">is not None</span>:
+                <span class="comment"># Prefix Caching: 从缓存读取</span>
+                k, v = k_cache, v_cache
+            
+            o = flash_attn_varlen_func(
+                q, k, v,
+                max_seqlen_q=context.max_seqlen_q,
+                cu_seqlens_q=context.cu_seqlens_q,
+                max_seqlen_k=context.max_seqlen_k,
+                cu_seqlens_k=context.cu_seqlens_k,
+                block_table=context.block_tables
+            )
+        
+        <span class="comment"># 3. Decode 阶段</span>
+        <span class="keyword">else</span>:
+            o = flash_attn_with_kvcache(
+                q.unsqueeze(1), k_cache, v_cache,
+                cache_seqlens=context.context_lens,
+                block_table=context.block_tables
+            )
+        
+        <span class="keyword">return</span> o
+
+<span class="comment"># Triton Kernel: 高效写入 KV Cache</span>
+<span class="keyword">@triton.jit</span>
+<span class="keyword">def</span> <span class="function">store_kvcache_kernel</span>(...):
+    idx = tl.program_id(0)
+    slot = tl.load(slot_mapping_ptr + idx)
+    <span class="keyword">if</span> slot == -1: <span class="keyword">return</span>
+    
+    key = tl.load(key_ptr + key_offsets)
+    value = tl.load(value_ptr + value_offsets)
+    
+    cache_offsets = slot * D + tl.arange(0, D)
+    tl.store(k_cache_ptr + cache_offsets, key)
+    tl.store(v_cache_ptr + cache_offsets, value)
+</div>
+        </div>
+        <div class="slide-number">8 / 12</div>
+    </div>
+
+    <!-- Slide 9: Tensor Parallelism -->
+    <div class="slide">
+        <h2 class="slide-title">🔀 Tensor Parallelism</h2>
+        <div class="content">
+            <p class="slide-subtitle">多 GPU 并行推理实现</p>
+            
+            <div class="code-block">
+<span class="comment"># LLMEngine: 启动多进程</span>
+<span class="keyword">def</span> <span class="function">__init__</span>(self, model, **kwargs):
+    ctx = mp.get_context(<span class="string">"spawn"</span>)
+    <span class="keyword">for</span> i <span class="keyword">in</span> <span class="keyword">range</span>(1, config.tensor_parallel_size):
+        event = ctx.Event()
+        process = ctx.Process(
+            target=ModelRunner, 
+            args=(config, i, event)
+        )
+        process.start()
+        self.ps.append(process)
+        self.events.append(event)
+
+<span class="comment"># ModelRunner: 初始化 NCCL</span>
+<span class="keyword">def</span> <span class="function">__init__</span>(self, config, rank, event):
+    dist.init_process_group(
+        <span class="string">"nccl"</span>, 
+        <span class="string">"tcp://localhost:2333"</span>,
+        world_size=self.world_size, 
+        rank=rank
+    )
+    torch.cuda.set_device(rank)
+    
+    <span class="comment"># 共享内存通信</span>
+    <span class="keyword">if</span> rank == 0:
+        self.shm = SharedMemory(
+            name=<span class="string">"nanovllm"</span>, 
+            create=<span class="keyword">True</span>, 
+            size=2**20
+        )
+    <span class="keyword">else</span>:
+        self.shm = SharedMemory(name=<span class="string">"nanovllm"</span>)
+</div>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>📤 Column Parallel</h3>
+                    <p>QKV 投影 - 按列切分权重矩阵</p>
+                    <code>gate_up_proj, qkv_proj</code>
+                </div>
+                <div class="feature-card">
+                    <h3>📥 Row Parallel</h3>
+                    <p>输出投影 - 按行切分，最后 all-reduce</p>
+                    <code>o_proj, down_proj</code>
+                </div>
+            </div>
+        </div>
+        <div class="slide-number">9 / 12</div>
+    </div>
+
+    <!-- Slide 10: 数据流 -->
+    <div class="slide">
+        <h2 class="slide-title">🔃 完整数据流</h2>
+        <div class="content">
+            <p class="slide-subtitle">从请求到输出的完整路径</p>
+            
+            <div style="background: rgba(0,0,0,0.3); border-radius: 15px; padding: 25px;">
+                <ol style="line-height: 2; font-size: 1.1em;">
+                    <li><strong>Client</strong>: llm.generate(prompts, sampling_params)</li>
+                    <li><strong>Tokenizer</strong>: 文本 → token IDs</li>
+                    <li><strong>Sequence</strong>: 创建序列对象，状态=WAITING</li>
+                    <li><strong>Scheduler.add()</strong>: 加入 waiting 队列</li>
+                    <li><strong>Scheduler.schedule()</strong>: 
+                        <ul>
+                            <li>Prefill: 分配 blocks，计算完整 KV Cache</li>
+                            <li>Decode: 追加单个 token，更新 block</li>
+                        </ul>
+                    </li>
+                    <li><strong>ModelRunner.run()</strong>: 
+                        <ul>
+                            <li>prepare_prefill() / prepare_decode()</li>
+                            <li>model.forward() → compute_logits()</li>
+                        </ul>
+                    </li>
+                    <li><strong>Attention</strong>: FlashAttention + 写入 KV Cache</li>
+                    <li><strong>Sampler</strong>: 采样生成新 token</li>
+                    <li><strong>Scheduler.postprocess()</strong>: 
+                        <ul>
+                            <li>append_token() - 追加到序列</li>
+                            <li>检查结束条件 (EOS / max_tokens)</li>
+                            <li>释放 blocks</li>
+                        </ul>
+                    </li>
+                    <li><strong>Tokenizer</strong>: token IDs → 文本</li>
+                    <li><strong>Return</strong>: [{"text": "...", "token_ids": [...]}]</li>
+                </ol>
+            </div>
+        </div>
+        <div class="slide-number">10 / 12</div>
+    </div>
+
+    <!-- Slide 11: 性能优化 -->
+    <div class="slide">
+        <h2 class="slide-title">⚡ 性能优化技巧</h2>
+        <div class="content">
+            <p class="slide-subtitle">最大化推理吞吐量的关键配置</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>🎯 CUDA Graph (默认开启)</h3>
+                    <pre style="background: #1e1e3f; padding: 10px; border-radius: 5px;">
+llm = LLM(model, enforce_eager=False)</pre>
+                    <p>预编译计算图，减少 kernel launch</p>
+                </div>
+                <div class="feature-card">
+                    <h3>💾 GPU 内存利用率</h3>
+                    <pre style="background: #1e1e3f; padding: 10px; border-radius: 5px;">
+llm = LLM(model, gpu_memory_utilization=0.95)</pre>
+                    <p>根据实际显存调整，默认 0.9</p>
+                </div>
+                <div class="feature-card">
+                    <h3>📦 Batch Size</h3>
+                    <pre style="background: #1e1e3f; padding: 10px; border-radius: 5px;">
+llm = LLM(model, 
+    max_num_batched_tokens=16384,
+    max_num_seqs=256)</pre>
+                    <p>控制同时处理的 token 数和序列数</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔀 多卡并行</h3>
+                    <pre style="background: #1e1e3f; padding: 10px; border-radius: 5px;">
+llm = LLM(model, tensor_parallel_size=4)</pre>
+                    <p>支持 2-8 卡并行推理</p>
+                </div>
+            </div>
+            
+            <div class="code-block" style="margin-top: 20px;">
+<span class="comment"># 性能瓶颈分析</span>
+<span class="keyword">import</span> torch
+
+<span class="comment"># 查看显存</span>
+free, total = torch.cuda.mem_get_info()
+<span class="keyword">print</span>(f<span class="string">"Free: {free/1024**3:.1f}GB / Total: {total/1024**3:.1f}GB"</span>)
+
+<span class="comment"># 查看内存峰值</span>
+peak = torch.cuda.memory_stats()[<span class="string">"allocated_bytes.all.peak"</span>]
+<span class="keyword">print</span>(f<span class="string">"Peak memory: {peak/1024**3:.2f}GB"</span>)
+</div>
+        </div>
+        <div class="slide-number">11 / 12</div>
+    </div>
+
+    <!-- Slide 12: 总结 -->
+    <div class="slide">
+        <h2 class="slide-title">📝 总结</h2>
+        <div class="content">
+            <p class="slide-subtitle">Nano-vLLM 核心要点回顾</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>🏗️ 架构</h3>
+                    <ul>
+                        <li>LLMEngine → Scheduler → ModelRunner</li>
+                        <li>Continuous Batching</li>
+                        <li>Prefill/Decode 分离调度</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>🔑 特性</h3>
+                    <ul>
+                        <li>PagedAttention (BlockManager)</li>
+                        <li>Prefix Caching (xxhash)</li>
+                        <li>CUDA Graph</li>
+                        <li>Tensor Parallelism</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>📊 性能</h3>
+                    <ul>
+                        <li>1434 tokens/s vs 1362 tokens/s (vLLM)</li>
+                        <li>~1200 行 Python 代码</li>
+                        <li>API 兼容 vLLM</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>🚀 入门</h3>
+                    <ul>
+                        <li>pip install nanovllm</li>
+                        <li>python example.py</li>
+                        <li>python bench.py</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 50px;">
+                <p style="font-size: 1.5em; color: #00d4ff;">谢谢观看！</p>
+                <p style="color: rgba(255,255,255,0.5); margin-top: 20px;">
+                    GitHub: github.com/GeeeekExplorer/nano-vllm
+                </p>
+            </div>
+        </div>
+        <div class="slide-number">12 / 12</div>
+    </div>
+
+    <!-- 导航 -->
+    <div class="nav">
+        <button onclick="prevSlide()">← Prev</button>
+        <button onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const progress = document.getElementById('progress');
+        
+        function showSlide(n) {
+            slides[currentSlide].classList.remove('active');
+            currentSlide = (n + slides.length) % slides.length;
+            slides[currentSlide].classList.add('active');
+            progress.style.width = ((currentSlide + 1) / slides.length * 100) + '%';
+        }
+        
+        function nextSlide() {
+            showSlide(currentSlide + 1);
+        }
+        
+        function prevSlide() {
+            showSlide(currentSlide - 1);
+        }
+        
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                prevSlide();
+            }
+        });
+        
+        progress.style.width = ((currentSlide + 1) / slides.length * 100) + '%';
+    </script>
+</body>
+</html>
